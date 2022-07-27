@@ -1,34 +1,41 @@
-node{
-    def imgVersion = UUID.randomUUID().toString()
-    def dockerImage = "kammana/nodeapp-6pm:${imgVersion}"
-    stage('Source Checkout'){
-        
-        git 'https://github.com/javahometech/node-app'
+pipeline {
+    agent any
+    environment{
+        DOCKER_TAG = getDockerTag()
+        NEXUS_URL  = "172.31.34.232:8080"
+        IMAGE_URL_WITH_TAG = "${NEXUS_URL}/node-app:${DOCKER_TAG}"
     }
-    
-    
-    stage('Build Docker Image'){
-        sh "docker build -t ${dockerImage} ."
+    stages{
+        stage('Build Docker Image'){
+            steps{
+                sh "docker build . -t ${IMAGE_URL_WITH_TAG}"
+            }
+        }
+        stage('Nexus Push'){
+            steps{
+                withCredentials([string(credentialsId: 'nexus-pwd', variable: 'nexusPwd')]) {
+                    sh "docker login -u admin -p ${nexusPwd} ${NEXUS_URL}"
+                    sh "docker push ${IMAGE_URL_WITH_TAG}"
+                }
+            }
+        }
+        stage('Docker Deploy Dev'){
+            steps{
+                sshagent(['tomcat-dev']) {
+                    withCredentials([string(credentialsId: 'nexus-pwd', variable: 'nexusPwd')]) {
+                        sh "ssh ec2-user@172.31.0.38 docker login -u admin -p ${nexusPwd} ${NEXUS_URL}"
+                    }
+					// Remove existing container, if container name does not exists still proceed with the build
+					sh script: "ssh ec2-user@172.31.0.38 docker rm -f nodeapp",  returnStatus: true
+                    
+                    sh "ssh ec2-user@172.31.0.38 docker run -d -p 8080:8080 --name nodeapp ${IMAGE_URL_WITH_TAG}"
+                }
+            }
+        }
     }
-    
-    stage('Push DockerHub'){
-		withCredentials([string(credentialsId: 'docker-hub', variable: 'dockerhubPwd')]) {
-			sh "docker login -u kammana -p ${dockerhubPwd}"
-		}
-        
-        sh "docker push ${dockerImage}"
-    }
-    
-	stage('Dev Deploy'){
-		def dockerRun = "docker run -d -p 8080:8080 --name nodeapp ${dockerImage}"
-		sshagent(['dev-docker']) {
-		    try{
-				sh "ssh -o StrictHostKeyChecking=no ec2-user@13.127.166.0 docker rm -f nodeapp "
-			}catch(e){
-			
-			
-			}
-			sh "ssh  ec2-user@13.127.166.0 ${dockerRun}"
-		}
-	}
+}
+
+def getDockerTag(){
+    def tag  = sh script: 'git rev-parse HEAD', returnStdout: true
+    return tag
 }
